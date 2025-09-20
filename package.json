@@ -9,6 +9,17 @@
   "author": "Defold",
   "license": "ISC",
   "dependencies": {
-    "ws": "^8.18.3" 
-  }
+    "uuid": "^13.0.0",
+    "ws": "^8.18.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndersonFer03/H3ROES_C4RDS_SERVIDOR.git"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/AndersonFer03/H3ROES_C4RDS_SERVIDOR/issues"
+  },
+  "homepage": "https://github.com/AndersonFer03/H3ROES_C4RDS_SERVIDOR#readme"
 }
