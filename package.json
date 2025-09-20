@@ -1,0 +1,14 @@
+{
+  "name": "defold-websocket-server",
+  "version": "1.0.0",
+  "description": "A simple WebSocket server using the 'ws' library",
+  "main": "server.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "Defold",
+  "license": "ISC",
+  "dependencies": {
+    "ws": "^8.18.3" 
+  }
+}
