@@ -1,5 +1,5 @@
 const { v4: uuidv4 } = require("uuid");
-const { buildUnique, deepClone } = require("./utils");
+const { buildUnique, deepClone, compare, delta, distTo34 } = require("./utils");
 const WebSocket = require("ws");
 
 let rooms = {};
@@ -27,30 +27,52 @@ function bothPlayersReady(room) {
   return !!room.players.p1 && !!room.players.p2;
 }
 
+
+function mapCard(owner, i, c) {
+  const card = {
+    id: `${owner}_card_${i}`,
+    face: c,
+    revealed: false,
+    locked: false
+  };
+  if (c === "0") {
+    card.jokerValue = Math.floor(Math.random() * 68) + 1;
+  }
+  return card;
+}
+
 function createRoom() {
   const roomId = uuidv4();
-  const cards = buildUnique(20);
+
+  const cards = [
+    "67", "0", "2", "3", "4", "5", "6", "7", "8", "9",
+    "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"
+  ];
+
   rooms[roomId] = {
     createdAt: Date.now(),
     players: { p1: null, p2: null },
     state: {
       phase: "decide_start",
       cards: {
-        p1: cards.slice(0, 10).map((c,i)=>({id:`p1_card_${i}`,face:c,revealed:false,locked:false})),
-        p2: cards.slice(10, 20).map((c,i)=>({id:`p2_card_${i}`,face:c,revealed:false,locked:false}))
+        p1: cards.slice(0, 10).map((c, i) => mapCard("p1", i, c)),
+        p2: cards.slice(10, 20).map((c, i) => mapCard("p2", i, c))
       },
       turnOwner: null,
       roundScore: { p1: 0, p2: 0 },
       credits: { p1: 100, p2: 100 },
       bets: { p1: 10, p2: 10 },
       remainingPairs: 10,
-      jokerValue: 50,
       decider: {},
       pending: null,
       roundIndex: 1
     },
   };
+
   console.log(`🎲 Sala creada: ${roomId}`);
+  console.log("👉 Cartas P1:", rooms[roomId].state.cards.p1.map(c => c.face));
+  console.log("👉 Cartas P2:", rooms[roomId].state.cards.p2.map(c => c.face));
+
   return roomId;
 }
 
@@ -69,15 +91,30 @@ function findAvailableRoom(preferRoomId) {
 
 function resetRound(room) {
   const newCards = buildUnique(20);
-  room.state.cards.p1 = newCards.slice(0, 10).map((c,i)=>({id:`p1_card_${i}`,face:c,revealed:false,locked:false}));
-  room.state.cards.p2 = newCards.slice(10, 20).map((c,i)=>({id:`p2_card_${i}`,face:c,revealed:false,locked:false}));
+
+  room.state.cards.p1 = newCards.slice(0, 10).map((c, i) => mapCard("p1", i, c));
+  room.state.cards.p2 = newCards.slice(10, 20).map((c, i) => mapCard("p2", i, c));
+
   room.state.roundScore = { p1: 0, p2: 0 };
   room.state.remainingPairs = 10;
   room.state.turnOwner = null;
   room.state.phase = "decide_start";
   room.state.decider = {};
   room.state.pending = null;
-  room.state.roundIndex = (room.state.roundIndex || 0) + 1;  
+  room.state.roundIndex = (room.state.roundIndex || 0) + 1;
+
+  console.log(`🔄 Nueva ronda (#${room.state.roundIndex})`);
+  console.log("👉 Cartas P1:", room.state.cards.p1.map(c => c.face));
+  console.log("👉 Cartas P2:", room.state.cards.p2.map(c => c.face));
+}
+
+
+function getCardValue(card) {
+  if (!card) return 0;
+  if (card.face === "0" && card.jokerValue) {
+    return card.jokerValue;
+  }
+  return Number(card.face) || 0;
 }
 
 module.exports = {
@@ -89,4 +126,5 @@ module.exports = {
   createRoom,
   findAvailableRoom,
   resetRound,
+  getCardValue
 };
