@@ -27,7 +27,6 @@ function bothPlayersReady(room) {
   return !!room.players.p1 && !!room.players.p2;
 }
 
-
 function mapCard(owner, i, c) {
   const card = {
     id: `${owner}_card_${i}`,
@@ -44,10 +43,8 @@ function mapCard(owner, i, c) {
 function createRoom() {
   const roomId = uuidv4();
 
-  const cards = [
-    "67", "0", "2", "3", "4", "5", "6", "7", "8", "9",
-    "10", "11", "12", "13", "14", "15", "16", "17", "18", "19"
-  ];
+  // Genera 20 cartas únicas aleatorias
+  const cards = buildUnique(20);
 
   rooms[roomId] = {
     createdAt: Date.now(),
@@ -65,7 +62,9 @@ function createRoom() {
       remainingPairs: 10,
       decider: {},
       pending: null,
-      roundIndex: 1
+      roundIndex: 1,
+      scoreMode: "sumar",
+      history: [] 
     },
   };
 
@@ -89,7 +88,34 @@ function findAvailableRoom(preferRoomId) {
   return createRoom();
 }
 
+function endRound(room) {
+  const scoreP1 = room.state.roundScore.p1;
+  const scoreP2 = room.state.roundScore.p2;
+
+  const d1 = distTo34(scoreP1);
+  const d2 = distTo34(scoreP2);
+
+  let winner = null;
+  if (d1 < d2) winner = "p1";
+  else if (d2 < d1) winner = "p2";
+  else winner = "draw";
+
+  console.log(`🏁 Fin de ronda #${room.state.roundIndex}`);
+  console.log(`📊 Estado final → P1: ${scoreP1} pts | P2: ${scoreP2} pts`);
+  console.log(`🥇 Ganador: ${winner}`);
+
+  room.state.history.push({
+    round: room.state.roundIndex,
+    score: { p1: scoreP1, p2: scoreP2 },
+    winner
+  });
+
+  return winner;
+}
+
 function resetRound(room) {
+  endRound(room);
+
   const newCards = buildUnique(20);
 
   room.state.cards.p1 = newCards.slice(0, 10).map((c, i) => mapCard("p1", i, c));
@@ -108,7 +134,6 @@ function resetRound(room) {
   console.log("👉 Cartas P2:", room.state.cards.p2.map(c => c.face));
 }
 
-
 function getCardValue(card) {
   if (!card) return 0;
   if (card.face === "0" && card.jokerValue) {
@@ -126,5 +151,6 @@ module.exports = {
   createRoom,
   findAvailableRoom,
   resetRound,
-  getCardValue
+  getCardValue,
+  endRound
 };

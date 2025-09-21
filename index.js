@@ -23,8 +23,16 @@ function playedCardPayload(card) {
     id: card.id,
     face: card.face,
     jokerValue: card.jokerValue || null,
-    displayFace: card.face === "0" ? "joker" : card.face
+    displayFace: card.face === "0" ? "joker" : card.face,
   };
+}
+
+function printGameState(room, prefix = "") {
+  const rs = room.state.roundScore;
+  const cr = room.state.credits;
+  console.log(
+    `${prefix} 📊 Estado → P1: ${rs.p1} pts / ${cr.p1} créditos | P2: ${rs.p2} pts / ${cr.p2} créditos | Ronda: ${room.state.roundIndex}`
+  );
 }
 
 const wss = new WebSocket.Server({ port: 8080 });
@@ -36,11 +44,18 @@ wss.on("connection", (ws) => {
   ws.roomId = null;
   ws.side = null;
 
-  ws.on("pong", () => { ws.isAlive = true; });
+  ws.on("pong", () => {
+    ws.isAlive = true;
+  });
 
   ws.on("message", (raw) => {
     let data;
-    try { data = JSON.parse(raw); } catch { console.error("❌ Error al parsear:", raw); return; }
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      console.error("❌ Error al parsear:", raw);
+      return;
+    }
 
     if (data.type === "join") {
       const roomId = findAvailableRoom(data.roomId);
@@ -52,7 +67,10 @@ wss.on("connection", (ws) => {
 
       logAndBroadcast(roomId, `🙋 ${side} se unió a la sala ${roomId}`);
       ws.send(JSON.stringify({ type: "joined", side, roomId }));
-      ws.send(JSON.stringify({ type: "round_started", gameState: deepClone(room.state) }));
+      ws.send(
+        JSON.stringify({ type: "round_started", gameState: deepClone(room.state) })
+      );
+
       if (bothPlayersReady(room)) {
         logAndBroadcast(roomId, "🤝 Ambos jugadores listos");
         broadcast(roomId, { type: "both_ready", gameState: deepClone(room.state) });
@@ -64,13 +82,66 @@ wss.on("connection", (ws) => {
     const room = rooms[ws.roomId];
     if (!room) return;
 
-    // --- DECIDE STARTER ---
+    // Aplicar elección del ganador tras el duelo
+    if (data.type === "apply_score") {
+      const ps = room.state.pendingScore;
+      if (!ps || !room.state.waitingScoreChoice) return;
+
+      if (ws.side !== ps.winner) {
+        logAndBroadcast(
+          ws.roomId,
+          `⛔ Solo ${ps.winner} puede aplicar la puntuación pendiente`
+        );
+        return;
+      }
+
+      if (data.mode === "sumar") {
+        room.state.roundScore[ps.winner] += ps.diff;
+        logAndBroadcast(ws.roomId, `➕ ${ps.winner} eligió SUMAR ${ps.diff}`);
+      } else if (data.mode === "restar") {
+        room.state.roundScore[ps.loser] -= ps.diff;
+        logAndBroadcast(ws.roomId, `➖ ${ps.winner} eligió RESTAR ${ps.diff} a ${ps.loser}`);
+      } else {
+        return;
+      }
+
+      room.state.pendingScore = null;
+      room.state.waitingScoreChoice = false;
+
+      broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
+      printGameState(room, "✅ Después de apply_score");
+
+      if (room.state.remainingPairs === 0) {
+        room.state.phase = "decide_start";
+        const d1 = distTo34(room.state.roundScore.p1);
+        const d2 = distTo34(room.state.roundScore.p2);
+        if (d1 < d2) room.state.credits.p1 += room.state.bets.p1;
+        else if (d2 < d1) room.state.credits.p2 += room.state.bets.p2;
+
+        logAndBroadcast(ws.roomId, `🏁 Fin de ronda ${room.state.roundIndex}`);
+        printGameState(room, "🏁 Fin de ronda");
+
+        broadcast(ws.roomId, {
+          type: "round_finished",
+          gameState: deepClone(room.state),
+        });
+
+        resetRound(room);
+        logAndBroadcast(ws.roomId, `🔄 Nueva ronda iniciada (#${room.state.roundIndex})`);
+        broadcast(ws.roomId, {
+          type: "round_started",
+          gameState: deepClone(room.state),
+        });
+      }
+      return;
+    }
+
     if (data.type === "decide_card") {
       if (room.state.phase !== "decide_start" || !bothPlayersReady(room)) return;
 
       const side = ws.side;
       const { cardId } = data;
-      const card = room.state.cards[side].find(c => c.id === cardId);
+      const card = room.state.cards[side].find((c) => c.id === cardId);
       if (!card || card.locked || room.state.decider[side]) return;
 
       card.revealed = true;
@@ -78,21 +149,35 @@ wss.on("connection", (ws) => {
 
       room.state.decider[side] = playedCardPayload(card);
 
-      const shown = (card.face === "0") ? `JOKER(${card.jokerValue})` : card.face;
+      const shown = card.face === "0" ? `JOKER(${card.jokerValue})` : card.face;
       logAndBroadcast(ws.roomId, `🃏 ${side} eligió ${shown} (${card.id})`);
 
       if (room.state.decider.p1 && room.state.decider.p2) {
         const valP1 = getCardValue(room.state.decider.p1);
         const valP2 = getCardValue(room.state.decider.p2);
 
-        let starter = valP1 > valP2 ? "p1" : valP2 > valP1 ? "p2" : (Math.random() < 0.5 ? "p1" : "p2");
+        let starter =
+          valP1 > valP2
+            ? "p1"
+            : valP2 > valP1
+            ? "p2"
+            : Math.random() < 0.5
+            ? "p1"
+            : "p2";
+
         room.state.turnOwner = starter;
         room.state.phase = "play";
         room.state.remainingPairs--;
 
         const snapshot = deepClone(room.state);
-        logAndBroadcast(ws.roomId, `🎲 Compara inicio: p1=${valP1}, p2=${valP2} → empieza ${starter}`);
-        logAndBroadcast(ws.roomId, `📉 Se descuenta el par inicial, quedan ${room.state.remainingPairs} pares`);
+        logAndBroadcast(
+          ws.roomId,
+          `🎲 Compara inicio: p1=${valP1}, p2=${valP2} → empieza ${starter}`
+        );
+        logAndBroadcast(
+          ws.roomId,
+          `📉 Se descuenta el par inicial, quedan ${room.state.remainingPairs} pares`
+        );
 
         broadcast(ws.roomId, { type: "start_decided", gameState: snapshot });
         room.state.decider = {};
@@ -105,13 +190,18 @@ wss.on("connection", (ws) => {
     if (data.type === "play_card") {
       if (room.state.phase !== "play" || !bothPlayersReady(room)) return;
 
+      if (room.state.waitingScoreChoice) {
+        logAndBroadcast(ws.roomId, "⏳ Esperando elección de puntaje del ganador...");
+        return;
+      }
+
       const side = ws.side;
       if (room.state.turnOwner !== side && !room.state.pending) return;
 
       const { cardId } = data;
 
       if (!room.state.pending) {
-        const playedCard = room.state.cards[side].find(c => c.id === cardId);
+        const playedCard = room.state.cards[side].find((c) => c.id === cardId);
         if (!playedCard || playedCard.locked) return;
         playedCard.revealed = true;
 
@@ -119,33 +209,7 @@ wss.on("connection", (ws) => {
         room.state.pending = { ...pendingPayload, side, cardId: playedCard.id };
         room.state.decider[side] = pendingPayload;
 
-        if (playedCard.face === "67") {
-          const enemy = side === "p1" ? "p2" : "p1";
-
-          room.state.cards[enemy].forEach(c => {
-            if (!c.locked && !c.revealed) c.tempRevealed = true;
-          });
-          room.state.effectOwner = side;
-
-          logAndBroadcast(ws.roomId, `🃏 ${side} jugó Doctor Manhattan (${playedCard.id})`);
-          logAndBroadcast(ws.roomId, "🕵️ Revela todas las cartas del rival por 5 segundos");
-
-          broadcast(ws.roomId, { 
-            type: "doctor_manhattan_reveal", 
-            gameState: deepClone(room.state),
-            effectOwner: side
-          });
-
-          setTimeout(() => {
-            room.state.cards[enemy].forEach(c => { c.tempRevealed = false; });
-            room.state.effectOwner = null;
-
-            logAndBroadcast(ws.roomId, "🙈 Se ocultaron las cartas del rival otra vez");
-            broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
-          }, 5000);
-        }
-
-        const shown = (playedCard.face === "0") ? `JOKER(${playedCard.jokerValue})` : playedCard.face;
+        const shown = playedCard.face === "0" ? `JOKER(${playedCard.jokerValue})` : playedCard.face;
         logAndBroadcast(ws.roomId, `👉 ${side} juega ${shown} (${playedCard.id}), esperando rival`);
 
         broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
@@ -153,7 +217,7 @@ wss.on("connection", (ws) => {
       }
 
       const enemy = side === "p1" ? "p2" : "p1";
-      const enemyCard = room.state.cards[enemy].find(c => c.id === cardId);
+      const enemyCard = room.state.cards[enemy].find((c) => c.id === cardId);
       if (!enemyCard || enemyCard.locked) return;
       enemyCard.revealed = true;
 
@@ -164,50 +228,42 @@ wss.on("connection", (ws) => {
       const cmp = compare(a, b);
       const d = delta(a, b);
 
-      if (cmp === 1) {
-        room.state.roundScore[room.state.pending.side] += d;
-        logAndBroadcast(ws.roomId, `⚔️ ${room.state.pending.side} gana (${a} vs ${b}), +${d}`);
-      } else if (cmp === -1) {
-        room.state.roundScore[enemy] += d;
-        logAndBroadcast(ws.roomId, `⚔️ ${enemy} gana (${b} vs ${a}), +${d}`);
-      } else {
-        logAndBroadcast(ws.roomId, `🤝 Empate (${a} vs ${b})`);
-      }
-
-      const ownCard = room.state.cards[room.state.pending.side].find(c => c.id === room.state.pending.cardId);
+      const pendingOwner = room.state.pending.side;
+      const ownCard = room.state.cards[pendingOwner].find(
+        (c) => c.id === room.state.pending.cardId
+      );
       if (ownCard) ownCard.locked = true;
       enemyCard.locked = true;
 
       room.state.remainingPairs--;
       room.state.turnOwner = enemy;
       room.state.pending = null;
-
-      logAndBroadcast(ws.roomId, `🔄 Turno pasa a ${enemy}, quedan ${room.state.remainingPairs} pares`);
-      broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
-
       room.state.decider = {};
 
-      if (room.state.remainingPairs === 0) {
-        room.state.phase = "decide_start";
-        const d1 = distTo34(room.state.roundScore.p1);
-        const d2 = distTo34(room.state.roundScore.p2);
-        if (d1 < d2) room.state.credits.p1 += room.state.bets.p1;
-        else if (d2 < d1) room.state.credits.p2 += room.state.bets.p2;
-
-        logAndBroadcast(ws.roomId, `🏁 Fin de ronda ${room.state.roundIndex}`);
-        logAndBroadcast(ws.roomId, `   Puntuación: ${JSON.stringify(room.state.roundScore)}`);
-        logAndBroadcast(ws.roomId, `   Créditos: ${JSON.stringify(room.state.credits)}`);
-
-        broadcast(ws.roomId, { type: "round_finished", gameState: deepClone(room.state) });
-        resetRound(room);
-        logAndBroadcast(ws.roomId, `🔄 Nueva ronda iniciada (#${room.state.roundIndex})`);
-        broadcast(ws.roomId, { type: "round_started", gameState: deepClone(room.state) });
+      if (cmp === 0) {
+        logAndBroadcast(ws.roomId, `🤝 Duelo empatado (${a} vs ${b})`);
+        broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
+        return;
       }
-      return;
-    }
 
-    if (data.type === "ping") {
-      ws.send(JSON.stringify({ type: "pong" }));
+      const winner = cmp === 1 ? pendingOwner : enemy;
+      const loser = winner === "p1" ? "p2" : "p1";
+
+      room.state.pendingScore = { winner, loser, diff: d };
+      room.state.waitingScoreChoice = true;
+
+      logAndBroadcast(
+        ws.roomId,
+        `🏆 Duelo: ${winner} gana (${a} vs ${b}), debe elegir SUMAR o RESTAR ${d}`
+      );
+      printGameState(room, "⏳ Esperando apply_score");
+
+      broadcast(ws.roomId, {
+        type: "score_choice",
+        winner,
+        diff: d,
+        gameState: deepClone(room.state),
+      });
       return;
     }
   });
@@ -225,6 +281,8 @@ wss.on("connection", (ws) => {
       room.state.phase = "waiting";
       room.state.turnOwner = null;
       room.state.pending = null;
+      room.state.waitingScoreChoice = false;
+      room.state.pendingScore = null;
       broadcast(roomId, { type: "player_left", gameState: deepClone(room.state) });
     }
   });
@@ -233,13 +291,17 @@ wss.on("connection", (ws) => {
 });
 
 const interval = setInterval(() => {
-  wss.clients.forEach(ws => {
+  wss.clients.forEach((ws) => {
     if (ws.isAlive === false) {
-      try { ws.terminate(); } catch {}
+      try {
+        ws.terminate();
+      } catch {}
       return;
     }
     ws.isAlive = false;
-    try { ws.ping(); } catch {}
+    try {
+      ws.ping();
+    } catch {}
   });
 }, 15000);
 
