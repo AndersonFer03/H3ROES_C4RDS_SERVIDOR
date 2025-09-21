@@ -11,6 +11,7 @@ const {
   resetRound,
 } = require("./game");
 
+// -------------------- Helpers --------------------
 function getCardValue(card) {
   if (!card) return 0;
   if (card.face === "0") return Number(card.jokerValue) || 0;
@@ -35,6 +36,7 @@ function printGameState(room, prefix = "") {
   );
 }
 
+// -------------------- Servidor --------------------
 const wss = new WebSocket.Server({ port: 8080 });
 console.log("🚀 Servidor corriendo en ws://localhost:8080");
 
@@ -57,6 +59,7 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    // -------------------- JOIN --------------------
     if (data.type === "join") {
       const roomId = findAvailableRoom(data.roomId);
       const room = rooms[roomId];
@@ -67,9 +70,7 @@ wss.on("connection", (ws) => {
 
       logAndBroadcast(roomId, `🙋 ${side} se unió a la sala ${roomId}`);
       ws.send(JSON.stringify({ type: "joined", side, roomId }));
-      ws.send(
-        JSON.stringify({ type: "round_started", gameState: deepClone(room.state) })
-      );
+      ws.send(JSON.stringify({ type: "round_started", gameState: deepClone(room.state) }));
 
       if (bothPlayersReady(room)) {
         logAndBroadcast(roomId, "🤝 Ambos jugadores listos");
@@ -82,35 +83,50 @@ wss.on("connection", (ws) => {
     const room = rooms[ws.roomId];
     if (!room) return;
 
-    // Aplicar elección del ganador tras el duelo
+    // -------------------- APPLY SCORE --------------------
     if (data.type === "apply_score") {
       const ps = room.state.pendingScore;
       if (!ps || !room.state.waitingScoreChoice) return;
 
       if (ws.side !== ps.winner) {
-        logAndBroadcast(
-          ws.roomId,
-          `⛔ Solo ${ps.winner} puede aplicar la puntuación pendiente`
-        );
+        logAndBroadcast(ws.roomId, `⛔ Solo ${ps.winner} puede aplicar la puntuación pendiente`);
         return;
       }
 
       if (data.mode === "sumar") {
         room.state.roundScore[ps.winner] += ps.diff;
-        logAndBroadcast(ws.roomId, `➕ ${ps.winner} eligió SUMAR ${ps.diff}`);
+        logAndBroadcast(ws.roomId, `➕ ${ps.winner} eligió SUMAR ${ps.diff} a su puntaje`);
       } else if (data.mode === "restar") {
-        room.state.roundScore[ps.loser] -= ps.diff;
-        logAndBroadcast(ws.roomId, `➖ ${ps.winner} eligió RESTAR ${ps.diff} a ${ps.loser}`);
+        const current = room.state.roundScore[ps.winner];
+        if (current - ps.diff < 0) {
+          logAndBroadcast(
+            ws.roomId,
+            `⛔ No se puede RESTAR ${ps.diff} porque ${ps.winner} quedaría negativo`
+          );
+          ws.send(JSON.stringify({
+            type: "invalid_action",
+            reason: "puntaje_negativo",
+            gameState: deepClone(room.state),
+          }));
+          return;
+        }
+        room.state.roundScore[ps.winner] -= ps.diff;
+        logAndBroadcast(ws.roomId, `➖ ${ps.winner} eligió RESTAR ${ps.diff} a su propio puntaje`);
       } else {
         return;
       }
 
+      // ✅ restaurar turno al que sigue
+      room.state.turnOwner = (ps && ps.nextTurnOwner) || null;
+
+      // salir de modo elección
       room.state.pendingScore = null;
       room.state.waitingScoreChoice = false;
 
       broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
       printGameState(room, "✅ Después de apply_score");
 
+      // ¿fin de la ronda?
       if (room.state.remainingPairs === 0) {
         room.state.phase = "decide_start";
         const d1 = distTo34(room.state.roundScore.p1);
@@ -121,21 +137,16 @@ wss.on("connection", (ws) => {
         logAndBroadcast(ws.roomId, `🏁 Fin de ronda ${room.state.roundIndex}`);
         printGameState(room, "🏁 Fin de ronda");
 
-        broadcast(ws.roomId, {
-          type: "round_finished",
-          gameState: deepClone(room.state),
-        });
+        broadcast(ws.roomId, { type: "round_finished", gameState: deepClone(room.state) });
 
         resetRound(room);
         logAndBroadcast(ws.roomId, `🔄 Nueva ronda iniciada (#${room.state.roundIndex})`);
-        broadcast(ws.roomId, {
-          type: "round_started",
-          gameState: deepClone(room.state),
-        });
+        broadcast(ws.roomId, { type: "round_started", gameState: deepClone(room.state) });
       }
       return;
     }
 
+    // -------------------- DECIDE CARD --------------------
     if (data.type === "decide_card") {
       if (room.state.phase !== "decide_start" || !bothPlayersReady(room)) return;
 
@@ -187,6 +198,7 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    // -------------------- PLAY CARD --------------------
     if (data.type === "play_card") {
       if (room.state.phase !== "play" || !bothPlayersReady(room)) return;
 
@@ -200,6 +212,7 @@ wss.on("connection", (ws) => {
 
       const { cardId } = data;
 
+      // Primer click del par
       if (!room.state.pending) {
         const playedCard = room.state.cards[side].find((c) => c.id === cardId);
         if (!playedCard || playedCard.locked) return;
@@ -216,6 +229,7 @@ wss.on("connection", (ws) => {
         return;
       }
 
+      // Segundo click del par: responde el rival y resolvemos
       const enemy = side === "p1" ? "p2" : "p1";
       const enemyCard = room.state.cards[enemy].find((c) => c.id === cardId);
       if (!enemyCard || enemyCard.locked) return;
@@ -223,8 +237,8 @@ wss.on("connection", (ws) => {
 
       room.state.decider[enemy] = playedCardPayload(enemyCard);
 
-      const a = getCardValue(room.state.pending);
-      const b = getCardValue(enemyCard);
+      const a = getCardValue(room.state.pending);  // valor del que jugó primero
+      const b = getCardValue(enemyCard);           // valor del que respondió
       const cmp = compare(a, b);
       const d = delta(a, b);
 
@@ -236,38 +250,51 @@ wss.on("connection", (ws) => {
       enemyCard.locked = true;
 
       room.state.remainingPairs--;
-      room.state.turnOwner = enemy;
+
+      // 👉 guardar quién empieza la siguiente jugada y PAUSAR turno mientras decide el ganador
+      const nextTurnOwner = enemy;
+      room.state.turnOwner = null;
       room.state.pending = null;
       room.state.decider = {};
 
       if (cmp === 0) {
+        // Empate: nadie elige, seguimos normal (puedes decidir a quién le toca si quieres)
+        room.state.turnOwner = enemy; // o pendingOwner, según tu regla
         logAndBroadcast(ws.roomId, `🤝 Duelo empatado (${a} vs ${b})`);
         broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
         return;
       }
 
-      const winner = cmp === 1 ? pendingOwner : enemy;
-      const loser = winner === "p1" ? "p2" : "p1";
+      const winner = (cmp === 1) ? pendingOwner : enemy;
+      const loser  = (winner === "p1") ? "p2" : "p1";
 
-      room.state.pendingScore = { winner, loser, diff: d };
+      room.state.pendingScore = { winner, loser, diff: d, nextTurnOwner };
       room.state.waitingScoreChoice = true;
+
+      // 1) Todos ven el duelo resuelto (cartas reveladas / turno pausado)
+      broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
+
+      // 2) Solo el ganador recibe los botones
+      const winnerSocket = room.players[winner];
+      if (winnerSocket) {
+        winnerSocket.send(JSON.stringify({
+          type: "score_choice",
+          winner,
+          diff: d,
+          gameState: deepClone(room.state),
+        }));
+      }
 
       logAndBroadcast(
         ws.roomId,
         `🏆 Duelo: ${winner} gana (${a} vs ${b}), debe elegir SUMAR o RESTAR ${d}`
       );
       printGameState(room, "⏳ Esperando apply_score");
-
-      broadcast(ws.roomId, {
-        type: "score_choice",
-        winner,
-        diff: d,
-        gameState: deepClone(room.state),
-      });
       return;
     }
   });
 
+  // -------------------- CLOSE --------------------
   ws.on("close", () => {
     const { roomId, side } = ws;
     console.log("❌ Cliente desconectado", roomId ? `(${roomId}/${side})` : "");
@@ -290,18 +317,15 @@ wss.on("connection", (ws) => {
   ws.on("error", (err) => console.error("⚠️ WS error:", err?.message || err));
 });
 
+// -------------------- Heartbeat --------------------
 const interval = setInterval(() => {
   wss.clients.forEach((ws) => {
     if (ws.isAlive === false) {
-      try {
-        ws.terminate();
-      } catch {}
+      try { ws.terminate(); } catch {}
       return;
     }
     ws.isAlive = false;
-    try {
-      ws.ping();
-    } catch {}
+    try { ws.ping(); } catch {}
   });
 }, 15000);
 
