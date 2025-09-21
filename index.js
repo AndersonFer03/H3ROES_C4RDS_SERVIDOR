@@ -42,7 +42,6 @@ wss.on("connection", (ws) => {
     let data;
     try { data = JSON.parse(raw); } catch { console.error("❌ Error al parsear:", raw); return; }
 
-    // --- JOIN ---
     if (data.type === "join") {
       const roomId = findAvailableRoom(data.roomId);
       const room = rooms[roomId];
@@ -103,7 +102,6 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // --- PLAY CARD ---
     if (data.type === "play_card") {
       if (room.state.phase !== "play" || !bothPlayersReady(room)) return;
 
