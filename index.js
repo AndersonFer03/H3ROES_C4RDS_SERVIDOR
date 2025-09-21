@@ -11,7 +11,6 @@ const {
   resetRound,
 } = require("./game");
 
-// -------------------- Helpers --------------------
 function getCardValue(card) {
   if (!card) return 0;
   if (card.face === "0") return Number(card.jokerValue) || 0;
@@ -36,7 +35,6 @@ function printGameState(room, prefix = "") {
   );
 }
 
-// -------------------- Servidor --------------------
 const wss = new WebSocket.Server({ port: 8080 });
 console.log("🚀 Servidor corriendo en ws://localhost:8080");
 
@@ -103,11 +101,13 @@ wss.on("connection", (ws) => {
             ws.roomId,
             `⛔ No se puede RESTAR ${ps.diff} porque ${ps.winner} quedaría negativo`
           );
-          ws.send(JSON.stringify({
-            type: "invalid_action",
-            reason: "puntaje_negativo",
-            gameState: deepClone(room.state),
-          }));
+          ws.send(
+            JSON.stringify({
+              type: "invalid_action",
+              reason: "puntaje_negativo",
+              gameState: deepClone(room.state),
+            })
+          );
           return;
         }
         room.state.roundScore[ps.winner] -= ps.diff;
@@ -116,12 +116,10 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      // ✅ restaurar turno al que sigue
-      room.state.turnOwner = (ps && ps.nextTurnOwner) || null;
-
-      // salir de modo elección
+      // ✅ limpiar estados pendientes
       room.state.pendingScore = null;
       room.state.waitingScoreChoice = false;
+      room.state.lastDuel = null; // 👈 limpiar el snapshot cuando termina el duelo
 
       broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
       printGameState(room, "✅ Después de apply_score");
@@ -212,7 +210,6 @@ wss.on("connection", (ws) => {
 
       const { cardId } = data;
 
-      // Primer click del par
       if (!room.state.pending) {
         const playedCard = room.state.cards[side].find((c) => c.id === cardId);
         if (!playedCard || playedCard.locked) return;
@@ -229,7 +226,6 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      // Segundo click del par: responde el rival y resolvemos
       const enemy = side === "p1" ? "p2" : "p1";
       const enemyCard = room.state.cards[enemy].find((c) => c.id === cardId);
       if (!enemyCard || enemyCard.locked) return;
@@ -237,8 +233,8 @@ wss.on("connection", (ws) => {
 
       room.state.decider[enemy] = playedCardPayload(enemyCard);
 
-      const a = getCardValue(room.state.pending);  // valor del que jugó primero
-      const b = getCardValue(enemyCard);           // valor del que respondió
+      const a = getCardValue(room.state.pending);
+      const b = getCardValue(enemyCard);
       const cmp = compare(a, b);
       const d = delta(a, b);
 
@@ -250,39 +246,42 @@ wss.on("connection", (ws) => {
       enemyCard.locked = true;
 
       room.state.remainingPairs--;
-
-      // 👉 guardar quién empieza la siguiente jugada y PAUSAR turno mientras decide el ganador
-      const nextTurnOwner = enemy;
-      room.state.turnOwner = null;
+      room.state.turnOwner = enemy;
       room.state.pending = null;
-      room.state.decider = {};
 
       if (cmp === 0) {
-        // Empate: nadie elige, seguimos normal (puedes decidir a quién le toca si quieres)
-        room.state.turnOwner = enemy; // o pendingOwner, según tu regla
         logAndBroadcast(ws.roomId, `🤝 Duelo empatado (${a} vs ${b})`);
         broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
+        room.state.decider = {};
         return;
       }
 
-      const winner = (cmp === 1) ? pendingOwner : enemy;
-      const loser  = (winner === "p1") ? "p2" : "p1";
+      const winner = cmp === 1 ? pendingOwner : enemy;
+      const loser = winner === "p1" ? "p2" : "p1";
 
-      room.state.pendingScore = { winner, loser, diff: d, nextTurnOwner };
+      // ✅ snapshot del duelo actual
+      room.state.lastDuel = {
+        p1: room.state.decider.p1,
+        p2: room.state.decider.p2,
+      };
+
+      room.state.pendingScore = { winner, loser, diff: d };
       room.state.waitingScoreChoice = true;
 
-      // 1) Todos ven el duelo resuelto (cartas reveladas / turno pausado)
+      // Primero actualizamos todos para que vean las cartas
       broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
 
-      // 2) Solo el ganador recibe los botones
+      // Luego mandamos score_choice solo al ganador
       const winnerSocket = room.players[winner];
       if (winnerSocket) {
-        winnerSocket.send(JSON.stringify({
-          type: "score_choice",
-          winner,
-          diff: d,
-          gameState: deepClone(room.state),
-        }));
+        winnerSocket.send(
+          JSON.stringify({
+            type: "score_choice",
+            winner,
+            diff: d,
+            gameState: deepClone(room.state),
+          })
+        );
       }
 
       logAndBroadcast(
@@ -290,11 +289,13 @@ wss.on("connection", (ws) => {
         `🏆 Duelo: ${winner} gana (${a} vs ${b}), debe elegir SUMAR o RESTAR ${d}`
       );
       printGameState(room, "⏳ Esperando apply_score");
+
+      // Limpiamos decider (ya lo guardamos en lastDuel)
+      room.state.decider = {};
       return;
     }
   });
 
-  // -------------------- CLOSE --------------------
   ws.on("close", () => {
     const { roomId, side } = ws;
     console.log("❌ Cliente desconectado", roomId ? `(${roomId}/${side})` : "");
@@ -310,6 +311,7 @@ wss.on("connection", (ws) => {
       room.state.pending = null;
       room.state.waitingScoreChoice = false;
       room.state.pendingScore = null;
+      room.state.lastDuel = null;
       broadcast(roomId, { type: "player_left", gameState: deepClone(room.state) });
     }
   });
@@ -317,15 +319,18 @@ wss.on("connection", (ws) => {
   ws.on("error", (err) => console.error("⚠️ WS error:", err?.message || err));
 });
 
-// -------------------- Heartbeat --------------------
 const interval = setInterval(() => {
   wss.clients.forEach((ws) => {
     if (ws.isAlive === false) {
-      try { ws.terminate(); } catch {}
+      try {
+        ws.terminate();
+      } catch {}
       return;
     }
     ws.isAlive = false;
-    try { ws.ping(); } catch {}
+    try {
+      ws.ping();
+    } catch {}
   });
 }, 15000);
 
