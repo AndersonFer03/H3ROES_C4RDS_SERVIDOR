@@ -44,7 +44,9 @@ function createRoom() {
   const roomId = uuidv4();
 
   // Genera 20 cartas únicas aleatorias
-  const cards = buildUnique(20);
+ // const cards = buildUnique(20);
+const cards = ["0", "67", "3", "4", "5", "6", "7", "8", "9", "10",
+               "11", "12", "13", "14", "15", "16", "17", "18", "19", "20"]; 
 
   rooms[roomId] = {
     createdAt: Date.now(),

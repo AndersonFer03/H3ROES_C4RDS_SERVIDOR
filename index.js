@@ -35,6 +35,31 @@ function printGameState(room, prefix = "") {
   );
 }
 
+function activateDoctorManhattan(roomId, room, side) {
+  const enemy = side === "p1" ? "p2" : "p1";
+
+  room.state.cards[enemy].forEach((c) => {
+    if (!c.locked && !c.revealed) c.tempRevealed = true;
+  });
+
+  logAndBroadcast(roomId, `🕵️ ${side} activó Doctor Manhattan: revela cartas de ${enemy} por 5s`);
+  broadcast(roomId, {
+    type: "doctor_manhattan_reveal",
+    gameState: deepClone(room.state),
+    effectOwner: side,
+  });
+
+  setTimeout(() => {
+    const r = rooms[roomId];
+    if (!r) return;
+    r.state.cards[enemy].forEach((c) => {
+      if (c.tempRevealed && !c.locked && !c.revealed) c.tempRevealed = false;
+    });
+    logAndBroadcast(roomId, "🙈 Efecto de Doctor Manhattan terminó");
+    broadcast(roomId, { type: "update_state", gameState: deepClone(r.state) });
+  }, 5000);
+}
+
 const wss = new WebSocket.Server({ port: 8080 });
 console.log("🚀 Servidor corriendo en ws://localhost:8080");
 
@@ -57,7 +82,6 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // -------------------- JOIN --------------------
     if (data.type === "join") {
       const roomId = findAvailableRoom(data.roomId);
       const room = rooms[roomId];
@@ -81,7 +105,6 @@ wss.on("connection", (ws) => {
     const room = rooms[ws.roomId];
     if (!room) return;
 
-    // -------------------- APPLY SCORE --------------------
     if (data.type === "apply_score") {
       const ps = room.state.pendingScore;
       if (!ps || !room.state.waitingScoreChoice) return;
@@ -116,10 +139,9 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      // ✅ limpiar estados pendientes
       room.state.pendingScore = null;
       room.state.waitingScoreChoice = false;
-      room.state.lastDuel = null; // 👈 limpiar el snapshot cuando termina el duelo
+      room.state.lastDuel = null;
 
       broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
       printGameState(room, "✅ Después de apply_score");
@@ -144,7 +166,6 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // -------------------- DECIDE CARD --------------------
     if (data.type === "decide_card") {
       if (room.state.phase !== "decide_start" || !bothPlayersReady(room)) return;
 
@@ -196,7 +217,6 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // -------------------- PLAY CARD --------------------
     if (data.type === "play_card") {
       if (room.state.phase !== "play" || !bothPlayersReady(room)) return;
 
@@ -218,6 +238,10 @@ wss.on("connection", (ws) => {
         const pendingPayload = playedCardPayload(playedCard);
         room.state.pending = { ...pendingPayload, side, cardId: playedCard.id };
         room.state.decider[side] = pendingPayload;
+
+        if (playedCard.face === "67") {
+          activateDoctorManhattan(ws.roomId, room, side);
+        }
 
         const shown = playedCard.face === "0" ? `JOKER(${playedCard.jokerValue})` : playedCard.face;
         logAndBroadcast(ws.roomId, `👉 ${side} juega ${shown} (${playedCard.id}), esperando rival`);
@@ -259,7 +283,6 @@ wss.on("connection", (ws) => {
       const winner = cmp === 1 ? pendingOwner : enemy;
       const loser = winner === "p1" ? "p2" : "p1";
 
-      // ✅ snapshot del duelo actual
       room.state.lastDuel = {
         p1: room.state.decider.p1,
         p2: room.state.decider.p2,
@@ -268,10 +291,8 @@ wss.on("connection", (ws) => {
       room.state.pendingScore = { winner, loser, diff: d };
       room.state.waitingScoreChoice = true;
 
-      // Primero actualizamos todos para que vean las cartas
       broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
 
-      // Luego mandamos score_choice solo al ganador
       const winnerSocket = room.players[winner];
       if (winnerSocket) {
         winnerSocket.send(
@@ -290,7 +311,6 @@ wss.on("connection", (ws) => {
       );
       printGameState(room, "⏳ Esperando apply_score");
 
-      // Limpiamos decider (ya lo guardamos en lastDuel)
       room.state.decider = {};
       return;
     }
