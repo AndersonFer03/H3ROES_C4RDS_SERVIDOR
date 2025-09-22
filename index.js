@@ -91,6 +91,8 @@ wss.on("connection", (ws) => {
       ws.side = side;
 
       logAndBroadcast(roomId, `🙋 ${side} se unió a la sala ${roomId}`);
+      console.log("DEBUG JOIN:", side, "entró en sala", roomId);
+
       ws.send(JSON.stringify({ type: "joined", side, roomId }));
       ws.send(JSON.stringify({ type: "round_started", gameState: deepClone(room.state) }));
 
@@ -190,10 +192,10 @@ wss.on("connection", (ws) => {
           valP1 > valP2
             ? "p1"
             : valP2 > valP1
-            ? "p2"
-            : Math.random() < 0.5
-            ? "p1"
-            : "p2";
+              ? "p2"
+              : Math.random() < 0.5
+                ? "p1"
+                : "p2";
 
         room.state.turnOwner = starter;
         room.state.phase = "play";
@@ -217,6 +219,7 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    // --- JUGAR CARTA ---
     if (data.type === "play_card") {
       if (room.state.phase !== "play" || !bothPlayersReady(room)) return;
 
@@ -281,29 +284,44 @@ wss.on("connection", (ws) => {
       }
 
       const winner = cmp === 1 ? pendingOwner : enemy;
-      const loser = winner === "p1" ? "p2" : "p1";
 
       room.state.lastDuel = {
         p1: room.state.decider.p1,
         p2: room.state.decider.p2,
       };
 
-      room.state.pendingScore = { winner, loser, diff: d };
-      room.state.waitingScoreChoice = true;
+      if (winner === pendingOwner) {
+        room.state.pendingScore = { winner, diff: d };
+        room.state.waitingScoreChoice = true;
 
-      broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
+        broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
 
-      const winnerSocket = room.players[winner];
-      if (winnerSocket) {
-        winnerSocket.send(
-          JSON.stringify({
-            type: "score_choice",
-            winner,
-            diff: d,
-            gameState: deepClone(room.state),
-          })
+        const winnerSocket = room.players[winner];
+        if (winnerSocket) {
+          winnerSocket.send(
+            JSON.stringify({
+              type: "score_choice",
+              winner,
+              diff: d,
+              gameState: deepClone(room.state),
+            })
+          );
+        }
+
+        logAndBroadcast(
+          ws.roomId,
+          `🏆 Duelo: ${winner} gana (${a} vs ${b}), debe elegir SUMAR o RESTAR ${d}`
         );
+        printGameState(room, "⏳ Esperando apply_score");
+      } else {
+        logAndBroadcast(ws.roomId, `🙅 ${pendingOwner} pierde (${a} vs ${b}), sin puntos`);
+        printGameState(room, "➡️ Se pasa el turno");
+
+        broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
       }
+
+      room.state.decider = {};
+
 
       logAndBroadcast(
         ws.roomId,
@@ -344,13 +362,13 @@ const interval = setInterval(() => {
     if (ws.isAlive === false) {
       try {
         ws.terminate();
-      } catch {}
+      } catch { }
       return;
     }
     ws.isAlive = false;
     try {
       ws.ping();
-    } catch {}
+    } catch { }
   });
 }, 15000);
 
