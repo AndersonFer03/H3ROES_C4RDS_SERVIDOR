@@ -8,7 +8,7 @@ function broadcast(roomId, message) {
   const room = rooms[roomId];
   if (!room) return;
   const payload = JSON.stringify(message);
-  ["p1", "p2"].forEach(side => {
+  ["p1", "p2"].forEach((side) => {
     const ws = room.players[side];
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(payload);
   });
@@ -32,7 +32,7 @@ function mapCard(owner, i, c) {
     id: `${owner}_card_${i}`,
     face: c,
     revealed: false,
-    locked: false
+    locked: false,
   };
   if (c === "0") {
     card.jokerValue = Math.floor(Math.random() * 68) + 1;
@@ -43,36 +43,37 @@ function mapCard(owner, i, c) {
 function createRoom() {
   const roomId = uuidv4();
 
-  // Genera 20 cartas únicas aleatorias
  // const cards = buildUnique(20);
-const cards = ["0", "67", "3", "4", "5", "6", "7", "8", "9", "10",
-               "11", "12", "13", "14", "15", "16", "17", "18", "19", "20"]; 
+  const cards = [
+    "0", "67", "3", "4", "5", "6", "7", "8", "9", "10",
+    "11", "12", "13", "14", "15", "16", "17", "18", "19", "20",
+  ];
 
   rooms[roomId] = {
     createdAt: Date.now(),
     players: { p1: null, p2: null },
     state: {
-      phase: "decide_start",
+      phase: "betting", 
       cards: {
         p1: cards.slice(0, 10).map((c, i) => mapCard("p1", i, c)),
-        p2: cards.slice(10, 20).map((c, i) => mapCard("p2", i, c))
+        p2: cards.slice(10, 20).map((c, i) => mapCard("p2", i, c)),
       },
       turnOwner: null,
       roundScore: { p1: 0, p2: 0 },
       credits: { p1: 100, p2: 100 },
-      bets: { p1: 10, p2: 10 },
+      bets: { p1: null, p2: null }, 
       remainingPairs: 10,
       decider: {},
       pending: null,
       roundIndex: 1,
       scoreMode: "sumar",
-      history: [] 
+      history: [],
     },
   };
 
   console.log(`🎲 Sala creada: ${roomId}`);
-  console.log("👉 Cartas P1:", rooms[roomId].state.cards.p1.map(c => c.face));
-  console.log("👉 Cartas P2:", rooms[roomId].state.cards.p2.map(c => c.face));
+  console.log("👉 Cartas P1:", rooms[roomId].state.cards.p1.map((c) => c.face));
+  console.log("👉 Cartas P2:", rooms[roomId].state.cards.p2.map((c) => c.face));
 
   return roomId;
 }
@@ -109,7 +110,7 @@ function endRound(room) {
   room.state.history.push({
     round: room.state.roundIndex,
     score: { p1: scoreP1, p2: scoreP2 },
-    winner
+    winner,
   });
 
   return winner;
@@ -126,14 +127,15 @@ function resetRound(room) {
   room.state.roundScore = { p1: 0, p2: 0 };
   room.state.remainingPairs = 10;
   room.state.turnOwner = null;
-  room.state.phase = "decide_start";
+  room.state.phase = "betting"; 
+  room.state.bets = { p1: null, p2: null };
   room.state.decider = {};
   room.state.pending = null;
   room.state.roundIndex = (room.state.roundIndex || 0) + 1;
 
   console.log(`🔄 Nueva ronda (#${room.state.roundIndex})`);
-  console.log("👉 Cartas P1:", room.state.cards.p1.map(c => c.face));
-  console.log("👉 Cartas P2:", room.state.cards.p2.map(c => c.face));
+  console.log("👉 Cartas P1:", room.state.cards.p1.map((c) => c.face));
+  console.log("👉 Cartas P2:", room.state.cards.p2.map((c) => c.face));
 }
 
 function getCardValue(card) {
@@ -154,5 +156,5 @@ module.exports = {
   findAvailableRoom,
   resetRound,
   getCardValue,
-  endRound
+  endRound,
 };

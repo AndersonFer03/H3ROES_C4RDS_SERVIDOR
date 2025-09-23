@@ -82,6 +82,7 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    // --- JOIN ---
     if (data.type === "join") {
       const roomId = findAvailableRoom(data.roomId);
       const room = rooms[roomId];
@@ -91,8 +92,6 @@ wss.on("connection", (ws) => {
       ws.side = side;
 
       logAndBroadcast(roomId, `🙋 ${side} se unió a la sala ${roomId}`);
-      console.log("DEBUG JOIN:", side, "entró en sala", roomId);
-
       ws.send(JSON.stringify({ type: "joined", side, roomId }));
       ws.send(JSON.stringify({ type: "round_started", gameState: deepClone(room.state) }));
 
@@ -107,6 +106,48 @@ wss.on("connection", (ws) => {
     const room = rooms[ws.roomId];
     if (!room) return;
 
+    // --- PLACE BET ---
+    if (data.type === "place_bet") {
+      if (room.state.phase !== "betting") return;
+
+      const side = ws.side;
+      const amount = Number(data.amount);
+
+      if (amount <= 0 || amount > room.state.credits[side]) {
+        ws.send(
+          JSON.stringify({
+            type: "invalid_action",
+            reason: "apuesta_invalida",
+            gameState: deepClone(room.state),
+          })
+        );
+        return;
+      }
+
+      room.state.bets[side] = amount;
+      logAndBroadcast(ws.roomId, `💰 ${side} apostó ${amount} créditos`);
+
+      if (room.state.bets.p1 !== null && room.state.bets.p2 !== null) {
+        logAndBroadcast(ws.roomId, "🎲 Ambos jugadores apostaron, empieza la ronda");
+        room.state.phase = "decide_start";
+        broadcast(ws.roomId, { type: "bets_locked", gameState: deepClone(room.state) });
+      } else {
+        broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
+      }
+      return;
+    }
+
+    // --- RESET GAME ---
+    if (data.type === "reset_game") {
+      room.state.credits = { p1: 100, p2: 100 };
+      room.state.roundIndex = 1;
+      resetRound(room);
+      logAndBroadcast(ws.roomId, "🔁 Juego reiniciado");
+      broadcast(ws.roomId, { type: "game_reset", gameState: deepClone(room.state) });
+      return;
+    }
+
+    // --- APPLY SCORE ---
     if (data.type === "apply_score") {
       const ps = room.state.pendingScore;
       if (!ps || !room.state.waitingScoreChoice) return;
@@ -122,10 +163,7 @@ wss.on("connection", (ws) => {
       } else if (data.mode === "restar") {
         const current = room.state.roundScore[ps.winner];
         if (current - ps.diff < 0) {
-          logAndBroadcast(
-            ws.roomId,
-            `⛔ No se puede RESTAR ${ps.diff} porque ${ps.winner} quedaría negativo`
-          );
+          logAndBroadcast(ws.roomId, `⛔ No se puede RESTAR ${ps.diff} porque quedaría negativo`);
           ws.send(
             JSON.stringify({
               type: "invalid_action",
@@ -148,19 +186,45 @@ wss.on("connection", (ws) => {
       broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
       printGameState(room, "✅ Después de apply_score");
 
-      // ¿fin de la ronda?
+      // Fin de ronda?
       if (room.state.remainingPairs === 0) {
         room.state.phase = "decide_start";
         const d1 = distTo34(room.state.roundScore.p1);
         const d2 = distTo34(room.state.roundScore.p2);
+
         if (d1 < d2) room.state.credits.p1 += room.state.bets.p1;
         else if (d2 < d1) room.state.credits.p2 += room.state.bets.p2;
 
         logAndBroadcast(ws.roomId, `🏁 Fin de ronda ${room.state.roundIndex}`);
         printGameState(room, "🏁 Fin de ronda");
 
-        broadcast(ws.roomId, { type: "round_finished", gameState: deepClone(room.state) });
+        // 🔥 Verificar fin de partida
+        if (room.state.credits.p1 <= 0 || room.state.credits.p2 <= 0) {
+          const busted = room.state.credits.p1 <= 0 ? "p1" : "p2";
+          const winner = busted === "p1" ? "p2" : "p1";
+          logAndBroadcast(ws.roomId, `💥 ${busted} BUSTED! Gana ${winner}`);
+          broadcast(ws.roomId, {
+            type: "game_over",
+            winner,
+            reason: "busted",
+            gameState: deepClone(room.state),
+          });
+          return;
+        }
 
+        if (room.state.credits.p1 >= 1000 || room.state.credits.p2 >= 1000) {
+          const winner = room.state.credits.p1 >= 1000 ? "p1" : "p2";
+          logAndBroadcast(ws.roomId, `👑 ${winner} alcanzó 1000 créditos!`);
+          broadcast(ws.roomId, {
+            type: "game_over",
+            winner,
+            reason: "real_winner",
+            gameState: deepClone(room.state),
+          });
+          return;
+        }
+
+        broadcast(ws.roomId, { type: "round_finished", gameState: deepClone(room.state) });
         resetRound(room);
         logAndBroadcast(ws.roomId, `🔄 Nueva ronda iniciada (#${room.state.roundIndex})`);
         broadcast(ws.roomId, { type: "round_started", gameState: deepClone(room.state) });
@@ -168,6 +232,7 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    // --- DECIDE CARD ---
     if (data.type === "decide_card") {
       if (room.state.phase !== "decide_start" || !bothPlayersReady(room)) return;
 
@@ -192,16 +257,15 @@ wss.on("connection", (ws) => {
           valP1 > valP2
             ? "p1"
             : valP2 > valP1
-              ? "p2"
-              : Math.random() < 0.5
-                ? "p1"
-                : "p2";
+            ? "p2"
+            : Math.random() < 0.5
+            ? "p1"
+            : "p2";
 
         room.state.turnOwner = starter;
         room.state.phase = "play";
         room.state.remainingPairs--;
 
-        const snapshot = deepClone(room.state);
         logAndBroadcast(
           ws.roomId,
           `🎲 Compara inicio: p1=${valP1}, p2=${valP2} → empieza ${starter}`
@@ -211,7 +275,7 @@ wss.on("connection", (ws) => {
           `📉 Se descuenta el par inicial, quedan ${room.state.remainingPairs} pares`
         );
 
-        broadcast(ws.roomId, { type: "start_decided", gameState: snapshot });
+        broadcast(ws.roomId, { type: "start_decided", gameState: deepClone(room.state) });
         room.state.decider = {};
       } else {
         broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
@@ -219,7 +283,7 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // --- JUGAR CARTA ---
+    // --- PLAY CARD ---
     if (data.type === "play_card") {
       if (room.state.phase !== "play" || !bothPlayersReady(room)) return;
 
@@ -246,8 +310,12 @@ wss.on("connection", (ws) => {
           activateDoctorManhattan(ws.roomId, room, side);
         }
 
-        const shown = playedCard.face === "0" ? `JOKER(${playedCard.jokerValue})` : playedCard.face;
-        logAndBroadcast(ws.roomId, `👉 ${side} juega ${shown} (${playedCard.id}), esperando rival`);
+        const shown =
+          playedCard.face === "0" ? `JOKER(${playedCard.jokerValue})` : playedCard.face;
+        logAndBroadcast(
+          ws.roomId,
+          `👉 ${side} juega ${shown} (${playedCard.id}), esperando rival`
+        );
 
         broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
         return;
@@ -284,7 +352,6 @@ wss.on("connection", (ws) => {
       }
 
       const winner = cmp === 1 ? pendingOwner : enemy;
-
       room.state.lastDuel = {
         p1: room.state.decider.p1,
         p2: room.state.decider.p2,
@@ -316,18 +383,8 @@ wss.on("connection", (ws) => {
       } else {
         logAndBroadcast(ws.roomId, `🙅 ${pendingOwner} pierde (${a} vs ${b}), sin puntos`);
         printGameState(room, "➡️ Se pasa el turno");
-
         broadcast(ws.roomId, { type: "update_state", gameState: deepClone(room.state) });
       }
-
-      room.state.decider = {};
-
-
-      logAndBroadcast(
-        ws.roomId,
-        `🏆 Duelo: ${winner} gana (${a} vs ${b}), debe elegir SUMAR o RESTAR ${d}`
-      );
-      printGameState(room, "⏳ Esperando apply_score");
 
       room.state.decider = {};
       return;
@@ -357,18 +414,19 @@ wss.on("connection", (ws) => {
   ws.on("error", (err) => console.error("⚠️ WS error:", err?.message || err));
 });
 
+// --- Keepalive ---
 const interval = setInterval(() => {
   wss.clients.forEach((ws) => {
     if (ws.isAlive === false) {
       try {
         ws.terminate();
-      } catch { }
+      } catch {}
       return;
     }
     ws.isAlive = false;
     try {
       ws.ping();
-    } catch { }
+    } catch {}
   });
 }, 15000);
 
