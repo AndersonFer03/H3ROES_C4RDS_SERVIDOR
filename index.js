@@ -1,3 +1,4 @@
+// server.js
 const WebSocket = require("ws");
 const { deepClone, compare, delta, distTo34 } = require("./utils");
 const {
@@ -11,6 +12,7 @@ const {
   resetRound,
 } = require("./game");
 
+/* ----------------- helpers comunes ----------------- */
 function getCardValue(card) {
   if (!card) return 0;
   if (card.face === "0") return Number(card.jokerValue) || 0;
@@ -25,6 +27,9 @@ function playedCardPayload(card) {
     displayFace: card.face === "0" ? "joker" : card.face,
   };
 }
+function snapshotState(state) {
+  return deepClone(state);
+}
 function printGameState(room, prefix = "") {
   const rs = room.state.roundScore;
   const cr = room.state.credits;
@@ -32,9 +37,40 @@ function printGameState(room, prefix = "") {
     `${prefix} 📊 Estado → P1: ${rs.p1} pts / ${cr.p1} créditos | P2: ${rs.p2} pts / ${cr.p2} créditos | Ronda: ${room.state.roundIndex}`
   );
 }
-function snapshotState(state) {
-  return deepClone(state);
+
+/* ----------------- helpers de ronda/ack ----------------- */
+function startNextRound(roomId, room) {
+  resetRound(room);
+  logAndBroadcast(roomId, `🔄 Nueva ronda iniciada (#${room.state.roundIndex})`);
+  broadcast(roomId, { type: "round_started", gameState: snapshotState(room.state) });
 }
+function sendRoundResult(roomId, room, winner, isTie) {
+  room.state.phase = "round_end";
+  room.state.waitingNextRound = room.state.waitingNextRound || { p1: false, p2: false };
+
+  broadcast(roomId, {
+    type: "round_result",
+    winner: isTie ? null : winner,
+    isTie: !!isTie,
+    gameState: snapshotState(room.state),
+  });
+
+  logAndBroadcast(
+    roomId,
+    isTie ? `🤝 Ronda ${room.state.roundIndex} empatada`
+          : `🥇 Ganador de la ronda ${room.state.roundIndex}: ${winner}`
+  );
+}
+function maybeStartAfterAcks(roomId, room) {
+  const w = room.state.waitingNextRound || { p1: false, p2: false };
+  if (w.p1 && w.p2) {
+    // limpiar flags y arrancar
+    room.state.waitingNextRound = { p1: false, p2: false };
+    startNextRound(roomId, room);
+  }
+}
+
+/* ----------------- cierre de ronda ----------------- */
 function maybeFinishRound(roomId, room) {
   const s = room.state;
   if (s.remainingPairs === 0 && !s.waitingScoreChoice && s.phase === "play") {
@@ -44,31 +80,24 @@ function maybeFinishRound(roomId, room) {
 
 function finishRound(roomId, room) {
   const s = room.state;
-
   s.phase = "round_end";
-  s.roundAcks = s.roundAcks || { p1: false, p2: false };
-  s.roundAcks.p1 = false;
-  s.roundAcks.p2 = false;
-  s.roundWinner = null;
-  s.roundLoser = null;
 
   const d1 = distTo34(s.roundScore.p1);
   const d2 = distTo34(s.roundScore.p2);
 
+  let winner = null;
+  let isTie = false;
+
   if (d1 === d2) {
+    isTie = true;
     logAndBroadcast(roomId, `🤝 Ronda ${s.roundIndex} empatada: no hay cambios de créditos`);
   } else {
-    const winner = d1 < d2 ? "p1" : "p2";
+    winner = d1 < d2 ? "p1" : "p2";
     const loser = winner === "p1" ? "p2" : "p1";
-
-    s.roundWinner = winner;
-    s.roundLoser = loser;
-
     const winBet = Number(s.bets[winner]) || 0;
     const loseBet = Number(s.bets[loser]) || 0;
-
     s.credits[winner] += winBet;
-    s.credits[loser] -= loseBet;
+    s.credits[loser]  -= loseBet;
 
     logAndBroadcast(
       roomId,
@@ -78,43 +107,37 @@ function finishRound(roomId, room) {
 
   printGameState(room, "🏁 Fin de ronda");
 
+  // Game over?
   if (s.credits.p1 <= 0 || s.credits.p2 <= 0) {
     const busted = s.credits.p1 <= 0 ? "p1" : "p2";
-    const winner = busted === "p1" ? "p2" : "p1";
-    logAndBroadcast(roomId, `💥 ${busted} BUSTED! Gana ${winner}`);
-    broadcast(roomId, { type: "game_over", winner, reason: "busted", gameState: snapshotState(s) });
+    const goWinner = busted === "p1" ? "p2" : "p1";
+    logAndBroadcast(roomId, `💥 ${busted} BUSTED! Gana ${goWinner}`);
+    broadcast(roomId, { type: "game_over", winner: goWinner, reason: "busted", gameState: snapshotState(s) });
     return;
   }
   if (s.credits.p1 >= 1000 || s.credits.p2 >= 1000) {
-    const winner = s.credits.p1 >= 1000 ? "p1" : "p2";
-    logAndBroadcast(roomId, `👑 ${winner} alcanzó 1000 créditos!`);
-    broadcast(roomId, { type: "game_over", winner, reason: "real_winner", gameState: snapshotState(s) });
+    const goWinner = s.credits.p1 >= 1000 ? "p1" : "p2";
+    logAndBroadcast(roomId, `👑 ${goWinner} alcanzó 1000 créditos!`);
+    broadcast(roomId, { type: "game_over", winner: goWinner, reason: "real_winner", gameState: snapshotState(s) });
     return;
   }
 
-broadcast(roomId, {
-  type: "round_result",
-  winner: s.roundWinner,   
-  loser:  s.roundLoser,     
-  isTie:  s.roundWinner == null,   
-  gameState: snapshotState(s),
-});
-
+  // Enviar resultado y esperar ACKs
+  sendRoundResult(roomId, room, winner, isTie);
 }
 
+/* ----------------- efecto Doctor Manhattan ----------------- */
 function activateDoctorManhattan(roomId, room, side) {
   const enemy = side === "p1" ? "p2" : "p1";
   room.state.cards[enemy].forEach((c) => {
     if (!c.locked && !c.revealed) c.tempRevealed = true;
   });
-
   logAndBroadcast(roomId, `🕵️ ${side} activó Doctor Manhattan: revela cartas de ${enemy} por 5s`);
   broadcast(roomId, {
     type: "doctor_manhattan_reveal",
     gameState: snapshotState(room.state),
     effectOwner: side,
   });
-
   setTimeout(() => {
     const r = rooms[roomId];
     if (!r) return;
@@ -126,33 +149,37 @@ function activateDoctorManhattan(roomId, room, side) {
   }, 5000);
 }
 
+/* ----------------- WebSocket server ----------------- */
 const wss = new WebSocket.Server({ port: 8080 });
 console.log("🚀 Servidor corriendo en ws://localhost:8080");
 
 wss.on("connection", (ws) => {
   console.log("✅ Cliente conectado");
+
+  // keepalive 10 min (ping cada 30s, cortar si >10 min sin pong)
   ws.isAlive = true;
+  ws.lastPong = Date.now();
+  ws.on("pong", () => {
+    ws.isAlive = true;
+    ws.lastPong = Date.now();
+  });
+
   ws.roomId = null;
   ws.side = null;
 
-  ws.on("pong", () => (ws.isAlive = true));
-
   ws.on("message", (raw) => {
     let data;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      console.error("❌ Error al parsear:", raw);
-      return;
-    }
+    try { data = JSON.parse(raw); } catch { console.error("❌ Error al parsear:", raw); return; }
 
+    /* ----- join / emparejar ----- */
     if (data.type === "join") {
       const roomId = findAvailableRoom(data.roomId);
-      const room = rooms[roomId];
-      const side = !room.players.p1 ? "p1" : "p2";
+      const room   = rooms[roomId];
+      const side   = !room.players.p1 ? "p1" : "p2";
+
       room.players[side] = ws;
       ws.roomId = roomId;
-      ws.side = side;
+      ws.side   = side;
 
       logAndBroadcast(roomId, `🙋 ${side} se unió a la sala ${roomId}`);
       ws.send(JSON.stringify({ type: "joined", side, roomId }));
@@ -169,22 +196,15 @@ wss.on("connection", (ws) => {
     const room = rooms[ws.roomId];
     if (!room) return;
 
+    /* ----- apuestas ----- */
     if (data.type === "place_bet") {
       if (room.state.phase !== "betting") return;
       const side = ws.side;
       const amount = Number(data.amount);
-
       if (amount <= 0 || amount > room.state.credits[side]) {
-        ws.send(
-          JSON.stringify({
-            type: "invalid_action",
-            reason: "apuesta_invalida",
-            gameState: snapshotState(room.state),
-          })
-        );
+        ws.send(JSON.stringify({ type: "invalid_action", reason: "apuesta_invalida", gameState: snapshotState(room.state) }));
         return;
       }
-
       room.state.bets[side] = amount;
       logAndBroadcast(ws.roomId, `💰 ${side} apostó ${amount} créditos`);
 
@@ -199,7 +219,7 @@ wss.on("connection", (ws) => {
     }
 
     if (data.type === "reset_game") {
-      room.state.credits = { p1: 100, p2: 100 };
+      room.state.credits    = { p1: 100, p2: 100 };
       room.state.roundIndex = 1;
       resetRound(room);
       logAndBroadcast(ws.roomId, "🔁 Juego reiniciado");
@@ -207,6 +227,20 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    /* ----- ACK de fin de ronda ----- */
+    if (data.type === "round_ack") {
+      if (room.state.phase !== "round_end") return;
+      const side = ws.side;
+      room.state.waitingNextRound = room.state.waitingNextRound || { p1: false, p2: false };
+      if (!room.state.waitingNextRound[side]) {
+        room.state.waitingNextRound[side] = true;
+        logAndBroadcast(ws.roomId, `✅ ${side} listo para la siguiente ronda`);
+        maybeStartAfterAcks(ws.roomId, room);
+      }
+      return;
+    }
+
+    /* ----- aplicar score (SUMAR/RESTAR) ----- */
     if (data.type === "apply_score") {
       const ps = room.state.pendingScore;
       if (!ps || !room.state.waitingScoreChoice) return;
@@ -214,6 +248,12 @@ wss.on("connection", (ws) => {
       if (ws.side !== ps.winner) {
         logAndBroadcast(ws.roomId, `⛔ Solo ${ps.winner} puede aplicar la puntuación pendiente`);
         return;
+      }
+
+      // limpia timeout si existiera
+      if (room.state.scoreChoiceTimer) {
+        clearTimeout(room.state.scoreChoiceTimer);
+        room.state.scoreChoiceTimer = null;
       }
 
       if (data.mode === "sumar") {
@@ -237,6 +277,7 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    /* ----- elegir carta inicial ----- */
     if (data.type === "decide_card") {
       if (room.state.phase !== "decide_start" || !bothPlayersReady(room)) return;
 
@@ -257,7 +298,9 @@ wss.on("connection", (ws) => {
         const valP2 = getCardValue(room.state.decider.p2);
 
         let starter =
-          valP1 > valP2 ? "p1" : valP2 > valP1 ? "p2" : Math.random() < 0.5 ? "p1" : "p2";
+          valP1 > valP2 ? "p1" :
+          valP2 > valP1 ? "p2" :
+          Math.random() < 0.5 ? "p1" : "p2";
 
         room.state.turnOwner = starter;
         room.state.phase = "play";
@@ -274,8 +317,10 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    /* ----- jugar carta (duelos) ----- */
     if (data.type === "play_card") {
       if (room.state.phase !== "play" || !bothPlayersReady(room)) return;
+
       if (room.state.waitingScoreChoice) {
         logAndBroadcast(ws.roomId, "⏳ Esperando elección de puntaje del ganador...");
         return;
@@ -286,6 +331,7 @@ wss.on("connection", (ws) => {
 
       const { cardId } = data;
 
+      // Primer movimiento del par (set pending)
       if (!room.state.pending) {
         const playedCard = room.state.cards[side].find((c) => c.id === cardId);
         if (!playedCard || playedCard.locked) return;
@@ -305,6 +351,7 @@ wss.on("connection", (ws) => {
         return;
       }
 
+      // Respuesta del rival
       const enemy = side === "p1" ? "p2" : "p1";
       const enemyCard = room.state.cards[enemy].find((c) => c.id === cardId);
       if (!enemyCard || enemyCard.locked) return;
@@ -315,7 +362,7 @@ wss.on("connection", (ws) => {
       const a = getCardValue(room.state.pending);
       const b = getCardValue(enemyCard);
       const cmp = compare(a, b);
-      const d = delta(a, b);
+      const d   = delta(a, b);
 
       const pendingOwner = room.state.pending.side;
       const ownCard = room.state.cards[pendingOwner].find((c) => c.id === room.state.pending.cardId);
@@ -338,6 +385,7 @@ wss.on("connection", (ws) => {
       room.state.lastDuel = { p1: room.state.decider.p1, p2: room.state.decider.p2 };
 
       if (winner === pendingOwner) {
+        // ganador decide
         room.state.pendingScore = { winner, diff: d };
         room.state.waitingScoreChoice = true;
 
@@ -345,15 +393,33 @@ wss.on("connection", (ws) => {
 
         const winnerSocket = room.players[winner];
         if (winnerSocket) {
-          winnerSocket.send(
-            JSON.stringify({
-              type: "score_choice",
-              winner,
-              diff: d,
-              gameState: snapshotState(room.state),
-            })
-          );
+          winnerSocket.send(JSON.stringify({
+            type: "score_choice",
+            winner,
+            diff: d,
+            gameState: snapshotState(room.state),
+          }));
         }
+
+        // ⏰ timeout de 30s para auto-SUMAR
+        if (room.state.scoreChoiceTimer) clearTimeout(room.state.scoreChoiceTimer);
+        room.state.scoreChoiceTimer = setTimeout(() => {
+          const r = rooms[ws.roomId];
+          if (!r) return;
+          const s = r.state;
+          if (!s.waitingScoreChoice || !s.pendingScore) return;
+
+          const { winner, diff } = s.pendingScore;
+          s.roundScore[winner] += diff; // auto SUMAR
+          s.pendingScore = null;
+          s.waitingScoreChoice = false;
+          s.lastDuel = null;
+
+          logAndBroadcast(ws.roomId, `⏰ Timeout: auto-SUMAR ${diff} para ${winner}`);
+          broadcast(ws.roomId, { type: "update_state", gameState: snapshotState(s) });
+          printGameState(r, "✅ Auto-apply por timeout");
+          maybeFinishRound(ws.roomId, r);
+        }, 30000);
 
         logAndBroadcast(ws.roomId, `🏆 Duelo: ${winner} gana (${a} vs ${b}), debe elegir SUMAR o RESTAR ${d}`);
         printGameState(room, "⏳ Esperando apply_score");
@@ -367,32 +433,11 @@ wss.on("connection", (ws) => {
       room.state.decider = {};
       return;
     }
-
-    if (data.type === "round_ack") {
-      const s = room.state;
-      if (s.phase !== "round_end") return; 
-      s.roundAcks = s.roundAcks || { p1: false, p2: false };
-      s.roundAcks[ws.side] = true;
-
-      logAndBroadcast(ws.roomId, `✅ ${ws.side} listo para la siguiente ronda`);
-
-      if (s.roundAcks.p1 && s.roundAcks.p2) {
-        resetRound(room);
-        s.roundWinner = null;
-        s.roundLoser = null;
-        s.roundAcks = { p1: false, p2: false };
-
-        logAndBroadcast(ws.roomId, `🔄 Nueva ronda iniciada (#${room.state.roundIndex})`);
-        broadcast(ws.roomId, { type: "round_started", gameState: snapshotState(room.state) });
-      }
-      return;
-    }
   });
 
   ws.on("close", () => {
     const { roomId, side } = ws;
     console.log("❌ Cliente desconectado", roomId ? `(${roomId}/${side})` : "");
-
     if (!roomId || !rooms[roomId]) return;
 
     const room = rooms[roomId];
@@ -400,19 +445,12 @@ wss.on("connection", (ws) => {
     const otherPlayer = room.players[otherSide];
 
     if (otherPlayer) {
-      otherPlayer.send(
-        JSON.stringify({
-          type: "room_closed",
-          reason: "player_disconnected",
-        })
-      );
-
+      otherPlayer.send(JSON.stringify({
+        type: "room_closed",
+        reason: "player_disconnected"
+      }));
       setTimeout(() => {
-        try {
-          otherPlayer.close(1000, "Sala cerrada por desconexión del oponente");
-        } catch (err) {
-          console.log("Error al cerrar conexión del otro jugador:", err.message);
-        }
+        try { otherPlayer.close(1000, "Sala cerrada por desconexión del oponente"); } catch {}
       }, 100);
     }
 
@@ -423,19 +461,24 @@ wss.on("connection", (ws) => {
   ws.on("error", (err) => console.error("⚠️ WS error:", err?.message || err));
 });
 
+const PING_INTERVAL_MS = 30000;   
+const IDLE_LIMIT_MS    = 10 * 60 * 1000; 
+
 const interval = setInterval(() => {
+  const now = Date.now();
   wss.clients.forEach((ws) => {
-    if (ws.isAlive === false) {
-      try {
-        ws.terminate();
-      } catch {}
+    if (!ws.isAlive) {
+      try { ws.terminate(); } catch {}
+      return;
+    }
+    if (now - (ws.lastPong || 0) > IDLE_LIMIT_MS) {
+      console.log("⏱️ Idle >10min, cerrando socket");
+      try { ws.terminate(); } catch {}
       return;
     }
     ws.isAlive = false;
-    try {
-      ws.ping();
-    } catch {}
+    try { ws.ping(); } catch {}
   });
-}, 15000);
+}, PING_INTERVAL_MS);
 
 wss.on("close", () => clearInterval(interval));
