@@ -11,7 +11,6 @@ const {
   resetRound,
 } = require("./game");
 
-
 function getCardValue(card) {
   if (!card) return 0;
   if (card.face === "0") return Number(card.jokerValue) || 0;
@@ -36,11 +35,9 @@ function printGameState(room, prefix = "") {
   );
 }
 
-
 function snapshotState(state) {
   return deepClone(state);
 }
-
 
 function maybeFinishRound(roomId, room) {
   const s = room.state;
@@ -48,6 +45,7 @@ function maybeFinishRound(roomId, room) {
     finishRound(roomId, room);
   }
 }
+
 function finishRound(roomId, room) {
   const s = room.state;
   s.phase = "round_end";
@@ -64,7 +62,6 @@ function finishRound(roomId, room) {
     const winBet  = Number(s.bets[winner]) || 0;
     const loseBet = Number(s.bets[loser])  || 0;
 
-    
     s.credits[winner] += winBet;
     s.credits[loser]  -= loseBet;
 
@@ -98,7 +95,6 @@ function finishRound(roomId, room) {
   broadcast(roomId, { type: "round_started", gameState: snapshotState(room.state) });
 }
 
-
 function activateDoctorManhattan(roomId, room, side) {
   const enemy = side === "p1" ? "p2" : "p1";
 
@@ -123,7 +119,6 @@ function activateDoctorManhattan(roomId, room, side) {
     broadcast(roomId, { type: "update_state", gameState: snapshotState(r.state) });
   }, 5000);
 }
-
 
 const wss = new WebSocket.Server({ port: 8080 });
 console.log("🚀 Servidor corriendo en ws://localhost:8080");
@@ -367,21 +362,33 @@ wss.on("connection", (ws) => {
   ws.on("close", () => {
     const { roomId, side } = ws;
     console.log("❌ Cliente desconectado", roomId ? `(${roomId}/${side})` : "");
+    
     if (!roomId || !rooms[roomId]) return;
+    
     const room = rooms[roomId];
-    if (room.players[side] === ws) room.players[side] = null;
-    if (playersCount(room) === 0) {
-      delete rooms[roomId];
-      console.log(`🧹 Sala ${roomId} eliminada (vacía)`);
-    } else {
-      room.state.phase = "waiting";
-      room.state.turnOwner = null;
-      room.state.pending = null;
-      room.state.waitingScoreChoice = false;
-      room.state.pendingScore = null;
-      room.state.lastDuel = null;
-      broadcast(roomId, { type: "player_left", gameState: snapshotState(room.state) });
+    const otherSide = side === "p1" ? "p2" : "p1";
+    const otherPlayer = room.players[otherSide];
+    
+    // Notificar al otro jugador antes de cerrarlo
+    if (otherPlayer) {
+        otherPlayer.send(JSON.stringify({ 
+            type: "room_closed", 
+            reason: "player_disconnected" 
+        }));
+        
+        // Esperar un momento para que el mensaje llegue, luego cerrar la conexión
+        setTimeout(() => {
+            try {
+                otherPlayer.close(1000, "Sala cerrada por desconexión del oponente");
+            } catch (err) {
+                console.log("Error al cerrar conexión del otro jugador:", err.message);
+            }
+        }, 100);
     }
+    
+    // Eliminar la sala inmediatamente
+    delete rooms[roomId];
+    console.log(`🧹 Sala ${roomId} cerrada y eliminada (jugador ${side} desconectado)`);
   });
 
   ws.on("error", (err) => console.error("⚠️ WS error:", err?.message || err));
