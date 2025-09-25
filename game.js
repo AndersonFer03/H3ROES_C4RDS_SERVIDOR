@@ -43,11 +43,11 @@ function mapCard(owner, i, c) {
 function createRoom() {
   const roomId = uuidv4();
 
- // const cards = buildUnique(20);
-  const cards = [
+  const cards = buildUnique(20);
+  /*const cards = [
     "0", "67", "3", "4", "5", "6", "7", "8", "9", "10",
     "0", "67", "3", "4", "5", "6", "7", "8", "9", "10",
-  ];
+  ];*/
 
   rooms[roomId] = {
     createdAt: Date.now(),
@@ -139,25 +139,21 @@ function resetRound(room) {
 }
 
 function resetGame(room) {
-  // Limpiar timers activos para evitar referencias circulares
   if (room.state.scoreChoiceTimer) {
     clearTimeout(room.state.scoreChoiceTimer);
     room.state.scoreChoiceTimer = null;
   }
   
-  // Limpiar completamente el estado del juego
   room.state.credits = { p1: 100, p2: 100 };
-  room.state.roundIndex = 0; // Se incrementará a 1 en resetRound
+  room.state.roundIndex = 0;
   room.state.history = [];
   
-  // Limpiar estados de puntuación pendientes
   room.state.waitingScoreChoice = false;
   room.state.pendingScore = null;
   room.state.lastDuel = null;
   room.state.waitingNextRound = null;
   room.state.resetRequest = { requester: null, pending: false };
   
-  // Resetear la ronda
   resetRound(room);
   
   console.log(" Juego completamente reiniciado");

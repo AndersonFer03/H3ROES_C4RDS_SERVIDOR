@@ -27,10 +27,8 @@ function playedCardPayload(card) {
   };
 }
 function snapshotState(state) {
-  // Crear una copia del estado excluyendo propiedades problemáticas
   const cleanState = { ...state };
   
-  // Eliminar timers y referencias circulares antes de clonar
   if (cleanState.scoreChoiceTimer) {
     delete cleanState.scoreChoiceTimer;
   }
@@ -41,13 +39,13 @@ function printGameState(room, prefix = "") {
   const rs = room.state.roundScore;
   const cr = room.state.credits;
   console.log(
-    `${prefix} 📊 Estado → P1: ${rs.p1} pts / ${cr.p1} créditos | P2: ${rs.p2} pts / ${cr.p2} créditos | Ronda: ${room.state.roundIndex}`
+    `${prefix} Estado → P1: ${rs.p1} pts / ${cr.p1} créditos | P2: ${rs.p2} pts / ${cr.p2} créditos | Ronda: ${room.state.roundIndex}`
   );
 }
 
 function startNextRound(roomId, room) {
   resetRound(room);
-  logAndBroadcast(roomId, `🔄 Nueva ronda iniciada (#${room.state.roundIndex})`);
+  logAndBroadcast(roomId, `Nueva ronda iniciada (#${room.state.roundIndex})`);
   broadcast(roomId, { type: "round_started", gameState: snapshotState(room.state) });
 }
 function sendRoundResult(roomId, room, winner, isTie) {
@@ -219,7 +217,6 @@ wss.on("connection", (ws) => {
       const side = ws.side;
       const enemy = side === "p1" ? "p2" : "p1";
       
-      // Inicializar estado de reinicio si no existe
       room.state.resetRequest = room.state.resetRequest || { requester: null, pending: false };
       
       if (room.state.resetRequest.pending) {
@@ -232,7 +229,6 @@ wss.on("connection", (ws) => {
       
       logAndBroadcast(ws.roomId, ` ${side} solicita reiniciar el juego`);
       
-      // Enviar solicitud al otro jugador
       const enemyWs = room.players[enemy];
       if (enemyWs) {
         enemyWs.send(JSON.stringify({ 
@@ -241,7 +237,6 @@ wss.on("connection", (ws) => {
         }));
       }
       
-      // Confirmar al solicitante que la petición fue enviada
       ws.send(JSON.stringify({ 
         type: "reset_request_sent" 
       }));
@@ -260,23 +255,19 @@ wss.on("connection", (ws) => {
       const requesterWs = room.players[requester];
       
       if (accepted) {
-        // Reiniciar el juego completamente
         resetGame(room);
         
         logAndBroadcast(ws.roomId, " Juego reiniciado por acuerdo mutuo");
         broadcast(ws.roomId, { type: "game_reset", gameState: snapshotState(room.state) });
       } else {
-        // Cancelar solicitud
         room.state.resetRequest = { requester: null, pending: false };
         
         logAndBroadcast(ws.roomId, ` ${side} rechazó la solicitud de reinicio`);
         
-        // Notificar al solicitante que fue rechazado
         if (requesterWs) {
           requesterWs.send(JSON.stringify({ type: "reset_request_denied" }));
         }
         
-        // Notificar que se canceló la solicitud
         broadcast(ws.roomId, { type: "reset_request_cancelled" });
       }
       return;
@@ -429,7 +420,7 @@ wss.on("connection", (ws) => {
       room.state.pending = null;
 
       if (cmp === 0) {
-        logAndBroadcast(ws.roomId, ` Duelo empatado (${a} vs ${b})`);
+        logAndBroadcast(ws.roomId, `Duelo empatado (${a} vs ${b})`);
         broadcast(ws.roomId, { type: "update_state", gameState: snapshotState(room.state) });
         room.state.decider = {};
         maybeFinishRound(ws.roomId, room);
@@ -490,7 +481,7 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     const { roomId, side } = ws;
-    console.log("❌ Cliente desconectado", roomId ? `(${roomId}/${side})` : "");
+    console.log("Cliente desconectado", roomId ? `(${roomId}/${side})` : "");
     if (!roomId || !rooms[roomId]) return;
 
     const room = rooms[roomId];
