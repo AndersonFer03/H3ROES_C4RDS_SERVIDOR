@@ -1,4 +1,3 @@
-// server.js
 const WebSocket = require("ws");
 const { deepClone, compare, delta, distTo34 } = require("./utils");
 const {

@@ -43,11 +43,11 @@ function mapCard(owner, i, c) {
 function createRoom() {
   const roomId = uuidv4();
 
-  const cards = buildUnique(20);
- /* const cards = [
+ // const cards = buildUnique(20);
+  const cards = [
     "0", "67", "3", "4", "5", "6", "7", "8", "9", "10",
     "0", "67", "3", "4", "5", "6", "7", "8", "9", "10",
-  ];*/
+  ];
 
   rooms[roomId] = {
     createdAt: Date.now(),
@@ -60,7 +60,7 @@ function createRoom() {
       },
       turnOwner: null,
       roundScore: { p1: 0, p2: 0 },
-      credits: { p1: 100, p2: 100 },
+      credits: { p1: 980, p2: 100 },
       bets: { p1: null, p2: null }, 
       remainingPairs: 10,
       decider: {},
