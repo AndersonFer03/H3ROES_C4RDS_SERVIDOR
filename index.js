@@ -9,6 +9,7 @@ const {
   createRoom,
   findAvailableRoom,
   resetRound,
+  resetGame,
 } = require("./game");
 
 function getCardValue(card) {
@@ -26,7 +27,15 @@ function playedCardPayload(card) {
   };
 }
 function snapshotState(state) {
-  return deepClone(state);
+  // Crear una copia del estado excluyendo propiedades problemáticas
+  const cleanState = { ...state };
+  
+  // Eliminar timers y referencias circulares antes de clonar
+  if (cleanState.scoreChoiceTimer) {
+    delete cleanState.scoreChoiceTimer;
+  }
+  
+  return deepClone(cleanState);
 }
 function printGameState(room, prefix = "") {
   const rs = room.state.roundScore;
@@ -206,10 +215,75 @@ wss.on("connection", (ws) => {
       return;
     }
 
+    if (data.type === "request_reset_game") {
+      const side = ws.side;
+      const enemy = side === "p1" ? "p2" : "p1";
+      
+      // Inicializar estado de reinicio si no existe
+      room.state.resetRequest = room.state.resetRequest || { requester: null, pending: false };
+      
+      if (room.state.resetRequest.pending) {
+        ws.send(JSON.stringify({ type: "reset_already_pending" }));
+        return;
+      }
+      
+      room.state.resetRequest.requester = side;
+      room.state.resetRequest.pending = true;
+      
+      logAndBroadcast(ws.roomId, ` ${side} solicita reiniciar el juego`);
+      
+      // Enviar solicitud al otro jugador
+      const enemyWs = room.players[enemy];
+      if (enemyWs) {
+        enemyWs.send(JSON.stringify({ 
+          type: "reset_game_request", 
+          requester: side 
+        }));
+      }
+      
+      // Confirmar al solicitante que la petición fue enviada
+      ws.send(JSON.stringify({ 
+        type: "reset_request_sent" 
+      }));
+      return;
+    }
+
+    if (data.type === "reset_game_response") {
+      const { accepted } = data;
+      const side = ws.side;
+      
+      if (!room.state.resetRequest || !room.state.resetRequest.pending) {
+        return;
+      }
+      
+      const requester = room.state.resetRequest.requester;
+      const requesterWs = room.players[requester];
+      
+      if (accepted) {
+        // Reiniciar el juego completamente
+        resetGame(room);
+        
+        logAndBroadcast(ws.roomId, " Juego reiniciado por acuerdo mutuo");
+        broadcast(ws.roomId, { type: "game_reset", gameState: snapshotState(room.state) });
+      } else {
+        // Cancelar solicitud
+        room.state.resetRequest = { requester: null, pending: false };
+        
+        logAndBroadcast(ws.roomId, ` ${side} rechazó la solicitud de reinicio`);
+        
+        // Notificar al solicitante que fue rechazado
+        if (requesterWs) {
+          requesterWs.send(JSON.stringify({ type: "reset_request_denied" }));
+        }
+        
+        // Notificar que se canceló la solicitud
+        broadcast(ws.roomId, { type: "reset_request_cancelled" });
+      }
+      return;
+    }
+
     if (data.type === "reset_game") {
-      room.state.credits    = { p1: 100, p2: 100 };
-      room.state.roundIndex = 1;
-      resetRound(room);
+      resetGame(room);
       logAndBroadcast(ws.roomId, " Juego reiniciado");
       broadcast(ws.roomId, { type: "game_reset", gameState: snapshotState(room.state) });
       return;

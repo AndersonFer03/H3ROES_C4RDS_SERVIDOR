@@ -138,6 +138,31 @@ function resetRound(room) {
   console.log(" Cartas P2:", room.state.cards.p2.map((c) => c.face));
 }
 
+function resetGame(room) {
+  // Limpiar timers activos para evitar referencias circulares
+  if (room.state.scoreChoiceTimer) {
+    clearTimeout(room.state.scoreChoiceTimer);
+    room.state.scoreChoiceTimer = null;
+  }
+  
+  // Limpiar completamente el estado del juego
+  room.state.credits = { p1: 100, p2: 100 };
+  room.state.roundIndex = 0; // Se incrementará a 1 en resetRound
+  room.state.history = [];
+  
+  // Limpiar estados de puntuación pendientes
+  room.state.waitingScoreChoice = false;
+  room.state.pendingScore = null;
+  room.state.lastDuel = null;
+  room.state.waitingNextRound = null;
+  room.state.resetRequest = { requester: null, pending: false };
+  
+  // Resetear la ronda
+  resetRound(room);
+  
+  console.log(" Juego completamente reiniciado");
+}
+
 function getCardValue(card) {
   if (!card) return 0;
   if (card.face === "0" && card.jokerValue) {
@@ -155,6 +180,7 @@ module.exports = {
   createRoom,
   findAvailableRoom,
   resetRound,
+  resetGame,
   getCardValue,
   endRound,
 };
