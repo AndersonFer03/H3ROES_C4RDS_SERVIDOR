@@ -71,9 +71,9 @@ function createRoom() {
     },
   };
 
-  console.log(`🎲 Sala creada: ${roomId}`);
-  console.log("👉 Cartas P1:", rooms[roomId].state.cards.p1.map((c) => c.face));
-  console.log("👉 Cartas P2:", rooms[roomId].state.cards.p2.map((c) => c.face));
+  console.log(` Sala creada: ${roomId}`);
+  console.log(" Cartas P1:", rooms[roomId].state.cards.p1.map((c) => c.face));
+  console.log(" Cartas P2:", rooms[roomId].state.cards.p2.map((c) => c.face));
 
   return roomId;
 }
@@ -103,9 +103,9 @@ function endRound(room) {
   else if (d2 < d1) winner = "p2";
   else winner = "draw";
 
-  console.log(`🏁 Fin de ronda #${room.state.roundIndex}`);
-  console.log(`📊 Estado final → P1: ${scoreP1} pts | P2: ${scoreP2} pts`);
-  console.log(`🥇 Ganador: ${winner}`);
+  console.log(` Fin de ronda #${room.state.roundIndex}`);
+  console.log(` Estado final → P1: ${scoreP1} pts | P2: ${scoreP2} pts`);
+  console.log(` Ganador: ${winner}`);
 
   room.state.history.push({
     round: room.state.roundIndex,
@@ -133,9 +133,9 @@ function resetRound(room) {
   room.state.pending = null;
   room.state.roundIndex = (room.state.roundIndex || 0) + 1;
 
-  console.log(`🔄 Nueva ronda (#${room.state.roundIndex})`);
-  console.log("👉 Cartas P1:", room.state.cards.p1.map((c) => c.face));
-  console.log("👉 Cartas P2:", room.state.cards.p2.map((c) => c.face));
+  console.log(` Nueva ronda (#${room.state.roundIndex})`);
+  console.log(" Cartas P1:", room.state.cards.p1.map((c) => c.face));
+  console.log(" Cartas P2:", room.state.cards.p2.map((c) => c.face));
 }
 
 function getCardValue(card) {
