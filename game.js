@@ -60,7 +60,7 @@ function createRoom() {
       },
       turnOwner: null,
       roundScore: { p1: 0, p2: 0 },
-      credits: { p1: 980, p2: 100 },
+      credits: { p1: 100, p2: 100 },
       bets: { p1: null, p2: null }, 
       remainingPairs: 10,
       decider: {},
